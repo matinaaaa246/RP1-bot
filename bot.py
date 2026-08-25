@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import os
 import tempfile
 from threading import Thread
@@ -266,10 +267,16 @@ async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_posts.pop(ref_id, None)
 
 def main():
+    # این دو خط ارور پایتون ۳.۱۴ را برطرف می‌کند
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # اجرای سرور وب
     t = Thread(target=run_web_server)
     t.daemon = True
     t.start()
 
+    # اجرای ربات
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CallbackQueryHandler(button_callback))
