@@ -1,10 +1,10 @@
-"""بات تلگرام: دستور /news -> گرفتن خبر از RSS -> بازنویسی -> دانلود عکس -> ارسال پیش‌نمایش با دکمه بله/خیر
-همچنین: ریپلای‌کردن روی یه پیش‌نمایش با متن/عکس/عکس+متن -> ارسال پیش‌نمایش تازه با محتوای آپدیت‌شده"""
 import logging
 import os
 import tempfile
+from threading import Thread
 
 from dotenv import load_dotenv
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -34,25 +34,27 @@ BUFFER_CHANNEL_ID = os.environ["BUFFER_CHANNEL_ID"]
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MAX_ITEMS_TO_CHECK = 8   # از بین فیدها چندتا رو امتحان کنه
-MAX_POSTS_TO_SEND = 3    # حداکثر چندتا پیش‌نمایش موفق بفرسته
+MAX_ITEMS_TO_CHECK = 8
+MAX_POSTS_TO_SEND = 3
 TELEGRAM_CAPTION_LIMIT = 1024
 
-# کلید = شناسه‌ی پیام پیش‌نمایش تو تلگرام؛ مقدار = محتوای اون پیش‌نمایش
-# {"image_path", "image_url", "caption_body" (بدون منبع), "source_block" (فقط خط منبع),
-#  "source_link"}
-# caption_body = متنی که هوش مصنوعی نوشته (یا خودت جایگزین کردی)، بدون خط منبع
-# source_block = خط‌های «منبع عکس/منبع خبر» که جدا نگه داشته می‌شه
 pending_posts: dict[str, dict] = {}
 
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is active!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host="0.0.0.0", port=port)
 
 def _trim_caption(caption: str, source_block: str) -> str:
-    """کپشن رو طوری کوتاه می‌کنه که کل پیام (با منبع) از سقف مجاز تلگرام رد نشه"""
-    max_caption_len = TELEGRAM_CAPTION_LIMIT - len(source_block) - 5  # ۵ کاراکتر برای «…»
+    max_caption_len = TELEGRAM_CAPTION_LIMIT - len(source_block) - 5
     if len(caption) > max_caption_len:
         caption = caption[:max_caption_len].rstrip() + "…"
     return caption
-
 
 async def send_preview(
     context: ContextTypes.DEFAULT_TYPE,
@@ -63,9 +65,6 @@ async def send_preview(
     source_block: str,
     source_link: str,
 ) -> None:
-    """یه پیش‌نمایش تازه (عکس + کپشن کامل با منبع + دکمه‌ها) می‌فرسته و تو pending_posts ثبتش می‌کنه.
-    تو خودِ پیش‌نمایش همیشه منبع نشون داده میشه (برای مرجع خودت)؛ تصمیم اینکه موقع
-    ارسال به اینستاگرام منبع باشه یا نه، با دکمه‌های پایین مشخص میشه"""
     full_caption_preview = caption_body + source_block
     with open(image_path, "rb") as photo:
         sent_message = await context.bot.send_photo(
@@ -93,7 +92,6 @@ async def send_preview(
     await context.bot.edit_message_reply_markup(
         chat_id=chat_id, message_id=sent_message.message_id, reply_markup=keyboard
     )
-
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -157,9 +155,8 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"جزئیات خبرهای رد‌شده:\n"
         )
 
-    details_text = "\n".join(error_details[:10])  # حداکثر ۱۰ تا برای اینکه پیام خیلی طولانی نشه
+    details_text = "\n".join(error_details[:10])
     await update.message.reply_text(summary + details_text)
-
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -208,9 +205,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     pending_posts.pop(post_id, None)
 
-
 async def handle_reply_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """کاربر روی یه پیش‌نمایش، عکس جدید (با یا بدون کپشن جدید) ریپلای کرده"""
     reply_to = update.message.reply_to_message
     if not reply_to:
         return
@@ -230,15 +225,12 @@ async def handle_reply_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await photo_file.download_to_drive(tmp_path)
 
     try:
-        # لینک فایل تلگرام برای بافر قابل اعتماد نیست (گاهی قابل fetch نیست)،
-        # پس عکس رو تو یه هاست عمومی واقعی آپلود می‌کنیم و لینک همون رو نگه می‌داریم
         new_image_url = upload_image(tmp_path)
     except Exception as e:
         logger.warning(f"آپلود عکس جایگزین به هاست عمومی خطا داد: {e}")
         await update.message.reply_text(f"آپلود عکس با خطا مواجه شد:\n{e}")
         return
 
-    # اگه کاربر همراه عکس متن هم فرستاده باشه، اون متن جایگزین کپشن قبلی میشه
     if update.message.caption:
         source_block = f"\n\nمنبع خبر: {post['source_link']}"
         new_caption_body = _trim_caption(update.message.caption, source_block)
@@ -251,9 +243,7 @@ async def handle_reply_photo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     pending_posts.pop(ref_id, None)
 
-
 async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """کاربر روی یه پیش‌نمایش، فقط متن جدید ریپلای کرده (بدون عکس جدید)"""
     reply_to = update.message.reply_to_message
     if not reply_to:
         return
@@ -275,8 +265,11 @@ async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     pending_posts.pop(ref_id, None)
 
-
 def main():
+    t = Thread(target=run_web_server)
+    t.daemon = True
+    t.start()
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CallbackQueryHandler(button_callback))
@@ -286,7 +279,6 @@ def main():
     )
     logger.info("بات روشن شد...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
